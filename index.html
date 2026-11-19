@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F8F5EE">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Mi Agenda">
+  <meta name="description" content="Mi Agenda: tareas de trabajo y personales en un calendario tranquilo.">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="icon" href="./icons/icon-192.png" type="image/png">
+  <link rel="stylesheet" href="./style.css">
+  <title>Mi Agenda</title>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="header">
+      <div><div class="kicker">MI AGENDA</div><h1 id="page-title">Hoy</h1><div id="page-subtitle" class="subtle"></div></div>
+      <button type="button" id="add-task" class="round-plus" aria-label="Añadir tarea">+</button>
+    </header>
+    <main id="main" class="main" aria-live="polite"></main>
+    <nav id="nav" class="bottom-nav" aria-label="Secciones de la agenda">
+      <button type="button" data-tab="today" aria-label="Hoy"><span aria-hidden="true">☀</span><small>Hoy</small></button>
+      <button type="button" data-tab="work" aria-label="Trabajo"><span aria-hidden="true">▤</span><small>Trabajo</small></button>
+      <button type="button" data-tab="personal" aria-label="Personal"><span aria-hidden="true">♡</span><small>Personal</small></button>
+      <button type="button" data-tab="calendar" aria-label="Calendario"><span aria-hidden="true">▦</span><small>Calendario</small></button>
+      <button type="button" data-tab="centers" aria-label="Centros"><span aria-hidden="true">⌂</span><small>Centros</small></button>
+      <button type="button" data-tab="settings" aria-label="Ajustes"><span aria-hidden="true">⚙</span><small>Ajustes</small></button>
+    </nav>
+  </div>
+
+  <dialog id="task-dialog" aria-labelledby="task-dialog-title">
+    <form id="task-form" class="dialog-body">
+      <div class="dialog-head"><h2 id="task-dialog-title">Nueva tarea</h2><button type="button" class="plain-close" data-close="task-dialog" aria-label="Cerrar">×</button></div>
+      <p class="subtle">Puedes dictar utilizando el micrófono del teclado del iPhone.</p>
+      <label for="task-title">¿Qué tienes pendiente?</label>
+      <textarea id="task-title" rows="3" placeholder="Ej.: Revisar un pedido mañana a las 10" required></textarea>
+      <label for="task-area">Calendario</label>
+      <select id="task-area"><option value="work">Trabajo</option><option value="personal">Personal</option></select>
+      <div id="task-center-wrap"><label for="task-center">Centro de trabajo</label><select id="task-center"><option value="">Sin centro</option></select><p id="center-hint" class="small-note"></p></div>
+      <div class="two-col"><div><label for="task-date">Fecha</label><input id="task-date" type="date"></div><div><label for="task-time">Hora</label><input id="task-time" type="time"></div></div>
+      <p class="small-note">Esta versión web no envía notificaciones con la aplicación cerrada. Conserva Expo Go para los avisos.</p>
+      <div id="task-error" class="error-text" role="alert"></div>
+      <button type="submit" class="primary-btn">Guardar tarea</button>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog" aria-labelledby="import-dialog-title">
+    <div class="dialog-body">
+      <div class="dialog-head"><h2 id="import-dialog-title">Importar copia</h2><button type="button" class="plain-close" data-close="import-dialog" aria-label="Cerrar">×</button></div>
+      <p class="subtle">Elige la copia que guardaste desde Expo Go o pega su contenido. No se envía a internet.</p>
+      <label for="import-file">Archivo de copia (.txt o .json)</label>
+      <input type="file" id="import-file" accept=".json,.txt,application/json,text/plain">
+      <label for="import-text">O pega aquí la copia</label>
+      <textarea id="import-text" rows="5" placeholder="{ ... }"></textarea>
+      <div id="import-error" class="error-text" role="alert"></div>
+      <button type="button" id="import-confirm" class="primary-btn">Comprobar e importar</button>
+    </div>
+  </dialog>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
