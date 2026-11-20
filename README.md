@@ -31,3 +31,21 @@ GitHub Pages sirve los archivos públicos del código. **Nunca** subas tu copia 
 ## Origen del código
 
 La lógica de fechas, calendarios y validación de copias procede del proyecto Expo de Mi Agenda. La interfaz web es una adaptación nueva para navegadores. No se ha incorporado el listado privado de centros.
+
+
+## Sincronización privada (rama de desarrollo, aún no publicada)
+
+- Backend independiente: Supabase `mi-agenda`, Frankfurt. Tablas `agenda_tasks`, `agenda_centers`, `agenda_settings` con RLS por `auth.uid()`.
+- Acceso con correo y contraseña, independiente de Apple. La dirección sirve para verificación y recuperación; no es necesario configurar el correo en ambos teléfonos.
+- Los datos permanecen locales hasta pulsar **Unir esta agenda con mi cuenta**. Antes de vincular cada teléfono, exportar una copia.
+- El primer iPhone aporta sus tareas y centros; el segundo aporta solo IDs no existentes. Se conservan los datos remotos cuando un ID coincide. Las eliminaciones posteriores usan `deleted_at` para no resucitar tareas.
+- Los cambios se guardan en el teléfono y en una cola local hasta que se puedan enviar; la app sincroniza al abrirse, al volver a estar en línea y mediante el botón manual. Un conflicto de revisión bloquea la sobrescritura en vez de borrar datos.
+- Las copias `.json` nunca deben subirse a GitHub.
+- La sincronización **no proporciona notificaciones fiables con la PWA cerrada**. Mantener Expo Go para los avisos.
+
+### Pendiente antes de publicar
+
+1. Configurar Supabase Auth: correo/contraseña, confirmación de email y URL de redirección exacta `https://carlosherrerosan.github.io/mi-agenda-web/`.
+2. Ejecutar `npm test`, probar en Safari/iOS y probar offline, conflictos y recuperación de sesión.
+3. Revisar flujo de primer/segundo iPhone con copias y tareas de prueba antes de importar datos reales.
+4. No fusionar esta rama a `main` hasta completar estas comprobaciones.
