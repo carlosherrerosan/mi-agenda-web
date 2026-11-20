@@ -3,8 +3,8 @@ import { getMonthGrid, moveMonth, monthLabel, dayLabel, tasksForDay, taskCountsB
 import { parseBackup, serializeBackup } from './src/backup.js';
 import { AgendaCloud, createAgendaClient } from './src/cloud-sync.js';
 
-// This application is static: no account, server, analytics or network requests for task data.
-// Data remains in the local browser storage; export a backup before changing device/browser.
+// Los datos se guardan localmente y, tras vinculación explícita, se sincronizan con Supabase.
+// Las copias de seguridad nunca se publican en GitHub.
 const STORAGE_KEY = 'mi-agenda-web-local-v1';
 let cloud = null;
 let cloudStatus = 'Solo en este iPhone.';
@@ -96,7 +96,7 @@ function calendarView(){
 function centersView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt);
   const list=data.centers.map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
-  return `<p class="subtle">Los centros que importes o añadas se guardan únicamente en este dispositivo.</p>
+  return `<p class="subtle">Los centros se guardan en este dispositivo y se sincronizan cuando vincules tu cuenta.</p>
     <div class="hero"><div class="hero-number">${data.centers.length}</div><div><strong>Centros de trabajo</strong><div class="subtle">Organizados en tu agenda</div></div></div>
     <div class="center-list">${list||'<p class="empty">Aún no hay centros. Importa tu copia de Expo Go para recuperar los tuyos.</p>'}</div>
     <div class="panel"><h3>Añadir centros</h3><p class="small-note">Escribe uno por línea. Puedes añadir alias con el formato: Centro | alias1, alias2.</p><label for="center-input">Nuevos centros</label><textarea id="center-input" rows="4" placeholder="Nombre del centro"></textarea><button type="button" class="primary-btn" data-action="add-centers">Añadir centros</button></div>`;
@@ -117,7 +117,7 @@ function settingsView(){
     <div class="panel"><h3>Horario laboral</h3><div class="two-col"><div><label for="work-start">Desde</label><input type="time" id="work-start" value="${esc(s.start)}"></div><div><label for="work-end">Hasta</label><input type="time" id="work-end" value="${esc(s.end)}"></div></div>
     <label>Días de trabajo</label><div class="day-checks">${days}</div><div class="toggle-setting"><input type="checkbox" id="work-silence" ${s.silenceOutsideWork?'checked':''}><label for="work-silence">Respetar horario laboral al planificar avisos en la versión nativa</label></div>
     <button type="button" class="secondary-btn" data-action="save-settings">Guardar ajustes</button></div>
-    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Importa el archivo que guardaste desde Expo Go para traer tus tareas y centros a esta versión. La importación sustituye los datos locales de esta versión web, no los de Expo Go.</p>
+    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Antes de vincular este iPhone, puedes importar una copia de Expo Go. La importación sustituye los datos locales de esta versión web, nunca los de Expo Go.</p>
     <div class="settings-actions"><button type="button" class="primary-btn" data-action="import-backup">Importar copia de Expo Go</button><button type="button" class="secondary-btn" data-action="export-backup">Descargar copia de esta agenda</button></div>
     <p class="privacy-note">Las copias se guardan en el iPhone. Cuando vincules tu cuenta, las tareas se sincronizarán de forma privada; conserva copias periódicas.</p></div>
     <div class="panel"><h3>Instalación en el iPhone</h3><p class="subtle">Abre esta página en Safari, pulsa Compartir y elige «Añadir a pantalla de inicio». La agenda tendrá su propio icono.</p></div>`;
