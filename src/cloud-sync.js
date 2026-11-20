@@ -148,7 +148,8 @@ export class AgendaCloud {
     // Nunca borrar datos locales al cerrar sesión.
   }
   onLocalChange(before,after) {
-    if(!this.state.linked||this.account?.id!==this.state.userId)return;
+    if(!this.state.linked)return;
+    if(this.account&&this.account.id!==this.state.userId)throw new Error('Esta agenda está vinculada a otra cuenta.');
     const operations=diffAgenda(before,after);
     if(!operations.length)return;
     for(const op of operations){
@@ -275,8 +276,8 @@ export class AgendaCloud {
       this.notify('error');
     } finally {
       this.busy=false;
-      if(this.state.queue.length&&this.status==='pending'&&typeof navigator!=='undefined'&&navigator.onLine!==false)
-        queueMicrotask(()=>void this.sync());
+      // Reintentar únicamente cuando vuelva la conexión, la app recupere el foco
+      // o el usuario lo solicite; evita bucles de peticiones ante errores.
     }
   }
 }
