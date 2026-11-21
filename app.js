@@ -31,7 +31,17 @@ function save(){
   try { localStorage.setItem(STORAGE_KEY,serializeBackup(data)); storageWriteError=false; return true; }
   catch(error){storageWriteError=true;ui.message='No se pudieron guardar los datos en este dispositivo. Exporta una copia y revisa el almacenamiento.';console.error(error);return false;}
 }
-function change(mutator){mutator();save();render();}
+function change(mutator){
+  const before=structuredClone(data);
+  mutator();
+  if(!save()){
+    data=before;
+    render();
+    return false;
+  }
+  render();
+  return true;
+}
 function centerName(id){return data.centers.find(c=>c.id===id)?.name??'Centro no disponible';}
 function pill(label,active,action,extras=''){return `<button type="button" class="chip ${active?'active':''}" data-action="${action}" ${extras}>${esc(label)}</button>`;}
 function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
@@ -141,13 +151,14 @@ function saveTaskFromForm(event){
   const existing=editingTaskId?data.tasks.find(t=>t.id===editingTaskId):null;
   if(editingTaskId&&!existing){error.textContent='No se encontró la tarea original.';return;}
   const task=existing?{...existing,title,area,centerId,date,time}:{id:newId(),title,area,centerId,date,time,completedAt:null,createdAt:new Date().toISOString()};
-  change(()=>{
+  const saved=change(()=>{
     if(existing)data.tasks=data.tasks.map(t=>t.id===existing.id?task:t);else data.tasks.unshift(task);
     ui.message=existing?'Tarea modificada.':'Tarea guardada en este dispositivo.';
     if(ui.tab==='calendar'&&date){ui.calendarArea=area;ui.calendarMonth=date.slice(0,7);ui.calendarDay=date;}
     else{ui.tab='today';ui.todayArea='all';ui.todayCenter='';}
   });
-  editingTaskId=null;$('task-dialog').close();
+  if(saved){editingTaskId=null;$('task-dialog').close();}
+  else error.textContent='No se pudo guardar la tarea. Conserva la ventana abierta y revisa el almacenamiento.';
 }
 function importBackup(){
   const raw=$('import-text').value.trim();const error=$('import-error');error.textContent='';
@@ -155,9 +166,17 @@ function importBackup(){
   let restored;
   try{restored=parseBackup(raw);}catch(err){error.textContent=err instanceof Error?err.message:'Copia no válida';return;}
   if(!confirm(`La copia contiene ${restored.tasks.length} tareas y ${restored.centers.length} centros. Sustituirá los datos de ESTA versión web, pero no los de Expo Go. ¿Importar?`))return;
+  const previous=data,previousReadError=storageReadError;
   data={tasks:restored.tasks,centers:restored.centers,settings:restored.settings};
-  storageReadError=false;ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
-  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';save();$('import-dialog').close();render();
+  storageReadError=false;
+  if(!save()){
+    data=previous;storageReadError=previousReadError;
+    error.textContent='No se ha podido guardar la copia. La agenda anterior sigue intacta.';
+    render();return;
+  }
+  ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
+  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';
+  $('import-dialog').close();render();
 }
 function exportBackup(){
   try{
