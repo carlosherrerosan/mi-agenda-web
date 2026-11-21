@@ -152,15 +152,19 @@ export class AgendaCloud {
     if(this.account&&this.account.id!==this.state.userId)throw new Error('Esta agenda está vinculada a otra cuenta.');
     const operations=diffAgenda(before,after);
     if(!operations.length)return;
+    const previousQueue=this.state.queue.map(op=>({...op}));
     for(const op of operations){
       const existing=this.state.queue.find(q=>q.kind===op.kind&&q.id===op.id);
       op.baseline=existing?existing.baseline:revisionFor(this.state,op);
       this.state.queue=this.state.queue.filter(q=>!(q.kind===op.kind&&q.id===op.id));
       this.state.queue.push(op);
     }
-    this.generation++;
-    try {this.persist();this.notify('pending');}
-    catch {this.notify('error');throw new Error('No se pudo guardar la cola de sincronización en este iPhone.');}
+    try {this.persist();this.generation++;this.notify('pending');}
+    catch {
+      this.state.queue=previousQueue;
+      this.notify('error');
+      throw new Error('No se pudo guardar la cola de sincronización en este iPhone.');
+    }
     if(!this.busy&&typeof navigator!=='undefined'&&navigator.onLine!==false)void this.sync();
   }
   async allRows(table) {
@@ -225,8 +229,10 @@ export class AgendaCloud {
     if(this.state.userId&&this.state.userId!==this.account.id)throw new Error('Los datos pertenecen a otra cuenta.');
     if(this.state.linked)throw new Error('Este dispositivo ya está vinculado.');
     this.busy=true;this.notify('syncing');
+    const localSnapshot=JSON.stringify(this.getData());
     try {
       const remote=await this.fetchRemote();
+      if(JSON.stringify(this.getData())!==localSnapshot)throw new Error('La agenda cambió durante la vinculación. Vuelve a intentarlo.');
       const plan=planInitialMerge(this.getData(),remote);
       const userId=this.account.id;
       // Primero subir las tareas exclusivas. Ante fallo, no sustituir datos locales.
@@ -234,6 +240,7 @@ export class AgendaCloud {
       await this.uploadRows('tasks',plan.uploadTasks.map(value=>({kind:'tasks',id:value.id,value,deletedAt:null})),userId);
       if(plan.uploadSettings)await this.uploadSettings({kind:'settings',id:'settings',value:this.getData().settings,deletedAt:null},userId);
       const complete=await this.fetchRemote();
+      if(JSON.stringify(this.getData())!==localSnapshot)throw new Error('La agenda cambió durante la vinculación. Los cambios locales se han conservado; vuelve a intentarlo.');
       const merged=planInitialMerge(this.getData(),complete).merged;
       this.setData(merged); // Valida y guarda antes de declarar la unión completada.
       this.state.userId=userId;this.state.linked=true;this.state.queue=[];
