@@ -143,3 +143,79 @@ export function getTaskContext(task, centers) {
   const center = centers.find(c => c.id === task.centerId);
   return `Trabajo / ${center?.name ?? 'Centro no disponible'}`;
 }
+
+/** Interpretación local de fechas, horas y agenda en órdenes dictadas. */
+export function interpretTaskInput(text, now = new Date()) {
+  const n = normalize(text);
+  const raw = String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const base = extractSimpleSchedule(text, now);
+  let { date, time } = base;
+
+  const personal = /\b(?:agenda\s+personal|calendario\s+personal|en\s+personal|para\s+personal|tarea\s+personal)\b/.test(n);
+  const work = /\b(?:agenda\s+(?:de\s+)?trabajo|calendario\s+(?:de\s+)?trabajo|agenda\s+laboral|en\s+(?:el\s+)?trabajo|para\s+(?:el\s+)?trabajo|tarea\s+laboral)\b/.test(n);
+  const area = personal === work ? null : personal ? 'personal' : 'work';
+
+  const words = {
+    cero:0,una:1,uno:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6,siete:7,ocho:8,nueve:9,diez:10,
+    once:11,doce:12,trece:13,catorce:14,quince:15,dieciseis:16,diecisiete:17,dieciocho:18,
+    diecinueve:19,veinte:20,veintiuna:21,veintiuno:21,veintidos:22,veintitres:23
+  };
+  const timeMatch = raw.match(/\ba\s+las?\s+(\d{1,2}|cero|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuna|veintiuno|veintidos|veintitres)\b(?:(?::|\.)\s*(\d{1,2})|\s+y\s+(media|cuarto|treinta|quince|\d{1,2})|\s+menos\s+cuarto|\s+horas?(?:\s+(\d{1,2}))?|\s+(\d{2})(?!\d))?/);
+  if (timeMatch) {
+    let hour = /^\d+$/.test(timeMatch[1]) ? Number(timeMatch[1]) : words[timeMatch[1]];
+    let minute = 0;
+    if (timeMatch[2] !== undefined) minute = Number(timeMatch[2]);
+    else if (timeMatch[3] !== undefined) minute = ({media:30,cuarto:15,treinta:30,quince:15})[timeMatch[3]] ?? Number(timeMatch[3]);
+    else if (timeMatch[4] !== undefined) minute = Number(timeMatch[4]);
+    else if (timeMatch[5] !== undefined) minute = Number(timeMatch[5]);
+    if (/\bmenos\s+cuarto\b/.test(timeMatch[0])) { hour = (hour + 23) % 24; minute = 45; }
+    const tail = raw.slice(timeMatch.index + timeMatch[0].length);
+    const period = tail.match(/^\s+de\s+la\s+(manana|tarde|noche|madrugada)\b/)?.[1];
+    if ((period === 'tarde' || period === 'noche') && hour >= 1 && hour <= 11) hour += 12;
+    else if (period === 'noche' && hour === 12) hour = 0;
+    if (Number.isInteger(hour) && hour >= 0 && hour <= 23 && Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      time = `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`;
+    }
+  }
+
+  if (!date) {
+    const months = {enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,setiembre:9,octubre:10,noviembre:11,diciembre:12};
+    const named = n.match(/\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?:\s+de\s+(\d{4}))?\b/);
+    const numeric = raw.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{4}))?\b/);
+    const day = named ? Number(named[1]) : numeric ? Number(numeric[1]) : null;
+    const month = named ? months[named[2]] : numeric ? Number(numeric[2]) : null;
+    const year = named ? (named[3] ? Number(named[3]) : null) : numeric ? (numeric[3] ? Number(numeric[3]) : null) : null;
+    if (day !== null) {
+      const candidate = y => `${y}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      let chosen = candidate(year ?? now.getFullYear());
+      if (year === null && isValidDate(chosen) && chosen < localISODate(now)) chosen = candidate(now.getFullYear()+1);
+      if (isValidDate(chosen)) date = chosen;
+    }
+  }
+
+  if (!date) {
+    const weekday = n.match(/\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/);
+    if (weekday) {
+      const days = {lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6,domingo:0};
+      let offset = (days[weekday[1]] - now.getDay() + 7) % 7;
+      const nowTime = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      if (offset === 0 && ((time && time <= nowTime) || /\b(?:proximo|proxima)\s+(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(n))) offset = 7;
+      date = localISODate(new Date(now.getFullYear(), now.getMonth(), now.getDate()+offset));
+    }
+  }
+  return {date, time, area};
+}
+
+/** Centros con más tareas pendientes primero; después, orden alfabético. */
+export function sortCentersByPending(centers, tasks) {
+  const counts = new Map();
+  for (const task of tasks) {
+    if (task.area === 'work' && !task.completedAt && task.centerId) {
+      counts.set(task.centerId, (counts.get(task.centerId) ?? 0) + 1);
+    }
+  }
+  return [...centers].sort((a,b) => {
+    const ac = counts.get(a.id) ?? 0, bc = counts.get(b.id) ?? 0;
+    return Number(bc > 0) - Number(ac > 0) || bc - ac || a.name.localeCompare(b.name,'es',{sensitivity:'base'});
+  });
+}
