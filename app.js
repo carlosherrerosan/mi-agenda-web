@@ -1,10 +1,13 @@
-import { detectCenter, extractSimpleSchedule, filterTasksByScope, getTaskContext, isValidDate, isValidTime, localISODate, parseCenterLines, normalize } from './src/logic.js';
+import { detectCenter, extractSimpleSchedule, filterTasksByScope, getTaskContext, isValidDate, isValidTime, localISODate, parseCenterLines, normalize, interpretTaskInput, sortCentersByPending } from './src/logic.js';
 import { getMonthGrid, moveMonth, monthLabel, dayLabel, tasksForDay, taskCountsByDay } from './src/calendar.js';
 import { parseBackup, serializeBackup } from './src/backup.js';
+import { AgendaCloud, createAgendaClient } from './src/cloud-sync.js';
 
-// This application is static: no account, server, analytics or network requests for task data.
-// Data remains in the local browser storage; export a backup before changing device/browser.
+// Los datos se guardan localmente y, tras vinculación explícita, se sincronizan con Supabase.
+// Las copias de seguridad nunca se publican en GitHub.
 const STORAGE_KEY = 'mi-agenda-web-local-v1';
+let cloud = null;
+let cloudStatus = 'Solo en este iPhone.';
 const defaultSettings = () => ({start:'08:00',end:'19:00',workDays:[1,2,3,4,5],silenceOutsideWork:true});
 const blankData = () => ({tasks:[],centers:[],settings:defaultSettings()});
 const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -14,6 +17,7 @@ const $ = id => document.getElementById(id);
 let data = blankData();
 let storageReadError = false;
 let storageWriteError = false;
+let editingTaskId = null;
 try {
   const saved = localStorage.getItem(STORAGE_KEY);
   if(saved) data = parseBackup(saved);
@@ -30,7 +34,15 @@ function save(){
   try { localStorage.setItem(STORAGE_KEY,serializeBackup(data)); storageWriteError=false; return true; }
   catch(error){storageWriteError=true;ui.message='No se pudieron guardar los datos en este dispositivo. Exporta una copia y revisa el almacenamiento.';console.error(error);return false;}
 }
-function change(mutator){mutator();save();render();}
+function change(mutator){
+  const before=structuredClone(data);
+  mutator();
+  if(!save()){data=before;render();return false;}
+  try {cloud?.onLocalChange(before,data);} catch(error){
+    data=before;save();ui.message=error.message;render();return false;
+  }
+  render();return true;
+}
 function centerName(id){return data.centers.find(c=>c.id===id)?.name??'Centro no disponible';}
 function pill(label,active,action,extras=''){return `<button type="button" class="chip ${active?'active':''}" data-action="${action}" ${extras}>${esc(label)}</button>`;}
 function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
@@ -41,6 +53,7 @@ function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
     return `<article class="task-card ${t.area==='personal'?'personal':''}">
       <button type="button" class="task-check ${done?'done':''}" aria-label="${done?'Marcar pendiente':'Marcar completada'}: ${esc(t.title)}" aria-pressed="${done}" data-action="toggle-task" data-id="${esc(t.id)}">${done?'✓':''}</button>
       <div class="task-body"><div class="task-name ${done?'done':''}">${esc(t.title)}</div><div class="task-context">${esc(context)}</div><div class="task-meta">${esc(when)}</div></div>
+      <button type="button" class="edit-btn" aria-label="Editar tarea ${esc(t.title)}" data-action="edit-task" data-id="${esc(t.id)}">Editar</button>
       <button type="button" class="delete-btn" aria-label="Eliminar tarea ${esc(t.title)}" data-action="delete-task" data-id="${esc(t.id)}">×</button>
     </article>`;
   }).join('');
@@ -53,7 +66,7 @@ function todayView(){
   const future=scoped(data.tasks.filter(t=>!t.completedAt&&t.date>today).sort(taskSort));
   const completed=scoped(data.tasks.filter(t=>Boolean(t.completedAt)).sort(taskSort));
   const filters=['all','work','personal'].map((x,i)=>pill(['Todas','Trabajo','Personal'][i],ui.todayArea===x,'today-area',`data-value="${x}"`)).join('');
-  const centerPills=ui.todayArea==='work'?`<div class="chip-row" aria-label="Filtrar por centro">${pill('Todos los centros',!ui.todayCenter,'today-center','data-id=""')}${pill('Sin centro',ui.todayCenter==='unassigned','today-center','data-id="unassigned"')}${data.centers.map(c=>pill(c.name,ui.todayCenter===c.id,'today-center',`data-id="${esc(c.id)}"`)).join('')}</div>`:'';
+  const centerPills=ui.todayArea==='work'?`<div class="chip-row" aria-label="Filtrar por centro">${pill('Todos los centros',!ui.todayCenter,'today-center','data-id=""')}${pill('Sin centro',ui.todayCenter==='unassigned','today-center','data-id="unassigned"')}${sortCentersByPending(data.centers,data.tasks).map(c=>pill(c.name,ui.todayCenter===c.id,'today-center',`data-id="${esc(c.id)}"`)).join('')}</div>`:'';
   const scope=ui.todayArea==='all'?'Todas las tareas':ui.todayArea==='personal'?'Personal':`Trabajo / ${ui.todayCenter==='unassigned'?'Sin centro':ui.todayCenter?centerName(ui.todayCenter):'Todos los centros'}`;
   return `<div class="hero"><div class="hero-number">${due.length}</div><div><strong>Tareas para hoy</strong><div class="subtle">Incluye atrasadas y sin fecha</div></div></div>
     <div class="subtle">Ver tareas de</div><div class="chip-row" aria-label="Filtrar tareas">${filters}</div>${centerPills}<p class="scope">Hoy / ${esc(scope)}</p>
@@ -61,7 +74,7 @@ function todayView(){
 }
 function workView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt&&(!ui.workCenter||(ui.workCenter==='unassigned'?!t.centerId:t.centerId===ui.workCenter))).sort(taskSort);
-  return `<p class="subtle top-intro">Las tareas se agrupan por centro. Pulsa uno para filtrar.</p><div class="chip-row">${pill('Todos',!ui.workCenter,'work-center','data-id=""')}${pill('Sin centro',ui.workCenter==='unassigned','work-center','data-id="unassigned"')}${data.centers.map(c=>pill(c.name,ui.workCenter===c.id,'work-center',`data-id="${esc(c.id)}"`)).join('')}</div>
+  return `<p class="subtle top-intro">Las tareas se agrupan por centro. Pulsa uno para filtrar.</p><div class="chip-row">${pill('Todos',!ui.workCenter,'work-center','data-id=""')}${pill('Sin centro',ui.workCenter==='unassigned','work-center','data-id="unassigned"')}${sortCentersByPending(data.centers,data.tasks).map(c=>pill(c.name,ui.workCenter===c.id,'work-center',`data-id="${esc(c.id)}"`)).join('')}</div>
     ${section('Pendientes',pending)}<button type="button" class="text-btn" data-action="go-centers">Gestionar mis centros (${data.centers.length})</button>`;
 }
 function personalView(){return section('Pendientes personales',data.tasks.filter(t=>t.area==='personal'&&!t.completedAt).sort(taskSort));}
@@ -84,22 +97,31 @@ function calendarView(){
 }
 function centersView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt);
-  const list=data.centers.map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
-  return `<p class="subtle">Los centros que importes o añadas se guardan únicamente en este dispositivo.</p>
+  const list=sortCentersByPending(data.centers,data.tasks).map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
+  return `<p class="subtle">Los centros se guardan en este dispositivo y se sincronizan cuando vincules tu cuenta.</p>
     <div class="hero"><div class="hero-number">${data.centers.length}</div><div><strong>Centros de trabajo</strong><div class="subtle">Organizados en tu agenda</div></div></div>
     <div class="center-list">${list||'<p class="empty">Aún no hay centros. Importa tu copia de Expo Go para recuperar los tuyos.</p>'}</div>
     <div class="panel"><h3>Añadir centros</h3><p class="small-note">Escribe uno por línea. Puedes añadir alias con el formato: Centro | alias1, alias2.</p><label for="center-input">Nuevos centros</label><textarea id="center-input" rows="4" placeholder="Nombre del centro"></textarea><button type="button" class="primary-btn" data-action="add-centers">Añadir centros</button></div>`;
 }
 function settingsView(){
   const s=data.settings;
+  const account=cloud?.account;
+  const linked=cloud?.state.linked&&cloud.state.userId===account?.id;
+  const cloudPanel=`<div class="panel"><h3>Sincronización privada</h3><p class="subtle" role="status">${esc(cloudStatus)}</p>${account?
+    `<p class="small-note">Cuenta: ${esc(account.email||'Identificada')}</p>${linked?
+      `<button type="button" class="secondary-btn" data-action="sync-now">Sincronizar ahora</button>`:
+      `<button type="button" class="primary-btn" data-action="join-cloud">Unir esta agenda con mi cuenta</button>`}
+    <button type="button" class="text-btn" data-action="sign-out">Cerrar sesión</button>`:
+    `<p class="small-note">La cuenta es independiente de Apple y no requiere tener el mismo correo configurado en ambos iPhone.</p>
+    <button type="button" class="primary-btn" data-action="open-login">Acceder o crear cuenta</button>`}</div>`;
   const days=['L','M','X','J','V','S','D'].map((name,i)=>`<label><input type="checkbox" name="work-day" value="${i+1}" ${s.workDays.includes(i+1)?'checked':''}>${name}</label>`).join('');
-  return `<div class="notice"><strong>Versión web de prueba</strong>Esta aplicación funciona sin Expo Go, pero todavía <b>no envía recordatorios con la aplicación cerrada</b>. Mantén Expo Go para tus avisos habituales.</div>
+  return `${cloudPanel}<div class="notice"><strong>Versión web de prueba</strong>Esta aplicación funciona sin Expo Go, pero todavía <b>no envía recordatorios con la aplicación cerrada</b>. Mantén Expo Go para tus avisos habituales.</div>
     <div class="panel"><h3>Horario laboral</h3><div class="two-col"><div><label for="work-start">Desde</label><input type="time" id="work-start" value="${esc(s.start)}"></div><div><label for="work-end">Hasta</label><input type="time" id="work-end" value="${esc(s.end)}"></div></div>
     <label>Días de trabajo</label><div class="day-checks">${days}</div><div class="toggle-setting"><input type="checkbox" id="work-silence" ${s.silenceOutsideWork?'checked':''}><label for="work-silence">Respetar horario laboral al planificar avisos en la versión nativa</label></div>
     <button type="button" class="secondary-btn" data-action="save-settings">Guardar ajustes</button></div>
-    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Importa el archivo que guardaste desde Expo Go para traer tus tareas y centros a esta versión. La importación sustituye los datos locales de esta versión web, no los de Expo Go.</p>
+    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Antes de vincular este iPhone, puedes importar una copia de Expo Go. La importación sustituye los datos locales de esta versión web, nunca los de Expo Go.</p>
     <div class="settings-actions"><button type="button" class="primary-btn" data-action="import-backup">Importar copia de Expo Go</button><button type="button" class="secondary-btn" data-action="export-backup">Descargar copia de esta agenda</button></div>
-    <p class="privacy-note">No hay cuenta ni sincronización automática. Los datos se guardan en el almacenamiento local del navegador y podrían perderse si se borran los datos de Safari. Haz copias periódicas.</p></div>
+    <p class="privacy-note">Las copias se guardan en el iPhone. Cuando vincules tu cuenta, las tareas se sincronizarán de forma privada; conserva copias periódicas.</p></div>
     <div class="panel"><h3>Instalación en el iPhone</h3><p class="subtle">Abre esta página en Safari, pulsa Compartir y elige «Añadir a pantalla de inicio». La agenda tendrá su propio icono.</p></div>`;
 }
 function render(){
@@ -112,11 +134,19 @@ function render(){
   $('main').innerHTML=`${issue}${ui.message?`<div class="notice" role="status">${esc(ui.message)}</div>`:''}${body}`;
 }
 function openTask(area=ui.tab==='personal'?'personal':ui.tab==='calendar'?ui.calendarArea:'work',date=ui.tab==='calendar'?ui.calendarDay:''){
+  editingTaskId=null;$('task-dialog-title').textContent='Nueva tarea';$('task-form').querySelector('[type="submit"]').textContent='Guardar tarea';
   $('task-form').reset();$('task-error').textContent='';$('task-area').value=area;$('task-date').value=date;
   const options=['<option value="">Sin centro</option>',...data.centers.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`)];
   $('task-center').innerHTML=options.join('');
   if(ui.tab==='work'&&ui.workCenter&&ui.workCenter!=='unassigned')$('task-center').value=ui.workCenter;
   $('center-hint').textContent='';syncTaskArea();$('task-dialog').showModal();$('task-title').focus();
+}
+function editTask(id){
+  const task=data.tasks.find(t=>t.id===id);if(!task)return;
+  openTask(task.area,task.date);editingTaskId=id;
+  $('task-dialog-title').textContent='Modificar tarea';$('task-form').querySelector('[type="submit"]').textContent='Guardar cambios';
+  $('task-title').value=task.title;$('task-area').value=task.area;$('task-center').value=task.centerId??'';
+  $('task-date').value=task.date;$('task-time').value=task.time;syncTaskArea();
 }
 function syncTaskArea(){$('task-center-wrap').hidden=$('task-area').value==='personal';}
 function saveTaskFromForm(event){
@@ -128,19 +158,36 @@ function saveTaskFromForm(event){
   if(time&&!isValidTime(time)){error.textContent='Hora no válida.';return;}
   if(time&&!date){error.textContent='Indica también la fecha.';return;}
   if(area==='work'&&!centerId&&!confirm('Esta tarea quedará en Trabajo sin centro. ¿Guardar igualmente?'))return;
-  const task={id:newId(),title,area,centerId,date,time,completedAt:null,createdAt:new Date().toISOString()};
-  change(()=>{data.tasks.unshift(task);ui.message='Tarea guardada en este dispositivo.';if(ui.tab==='calendar'&&date){ui.calendarArea=area;ui.calendarMonth=date.slice(0,7);ui.calendarDay=date;}else{ui.tab='today';ui.todayArea='all';ui.todayCenter='';}});
-  $('task-dialog').close();
+  const existing=editingTaskId?data.tasks.find(t=>t.id===editingTaskId):null;
+  if(editingTaskId&&!existing){error.textContent='No se encontró la tarea original.';return;}
+  const task=existing?{...existing,title,area,centerId,date,time}:{id:newId(),title,area,centerId,date,time,completedAt:null,createdAt:new Date().toISOString()};
+  const saved=change(()=>{
+    if(existing)data.tasks=data.tasks.map(t=>t.id===existing.id?task:t);else data.tasks.unshift(task);
+    ui.message=existing?'Tarea modificada.':'Tarea guardada en este dispositivo.';
+    if(ui.tab==='calendar'&&date){ui.calendarArea=area;ui.calendarMonth=date.slice(0,7);ui.calendarDay=date;}
+    else{ui.tab='today';ui.todayArea='all';ui.todayCenter='';}
+  });
+  if(saved){editingTaskId=null;$('task-dialog').close();}
+  else error.textContent='No se pudo guardar la tarea. Conserva esta ventana abierta y revisa el almacenamiento.';
 }
 function importBackup(){
+  if(cloud?.state.linked){$('import-error').textContent='Por seguridad, importa las copias antes de vincular este dispositivo.';return;}
   const raw=$('import-text').value.trim();const error=$('import-error');error.textContent='';
   if(!raw){error.textContent='Elige un archivo o pega el texto de la copia.';return;}
   let restored;
   try{restored=parseBackup(raw);}catch(err){error.textContent=err instanceof Error?err.message:'Copia no válida';return;}
   if(!confirm(`La copia contiene ${restored.tasks.length} tareas y ${restored.centers.length} centros. Sustituirá los datos de ESTA versión web, pero no los de Expo Go. ¿Importar?`))return;
+  const previous=data,previousReadError=storageReadError;
   data={tasks:restored.tasks,centers:restored.centers,settings:restored.settings};
-  storageReadError=false;ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
-  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';save();$('import-dialog').close();render();
+  storageReadError=false;
+  if(!save()){
+    data=previous;storageReadError=previousReadError;
+    error.textContent='No se pudo guardar la copia. La agenda anterior sigue intacta.';
+    render();return;
+  }
+  ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
+  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';
+  $('import-dialog').close();render();
 }
 function exportBackup(){
   try{
@@ -157,9 +204,10 @@ $('nav').addEventListener('click',event=>{
 $('add-task').addEventListener('click',()=>openTask());
 $('task-area').addEventListener('change',syncTaskArea);
 $('task-title').addEventListener('input',event=>{
-  const title=event.target.value;const schedule=extractSimpleSchedule(title);
-  if(schedule.date)$('task-date').value=schedule.date;
-  if(schedule.time)$('task-time').value=schedule.time;
+  const title=event.target.value;const parsed=interpretTaskInput(title);
+  if(parsed.date)$('task-date').value=parsed.date;
+  if(parsed.time)$('task-time').value=parsed.time;
+  if(parsed.area){$('task-area').value=parsed.area;syncTaskArea();}
   const match=detectCenter(title,data.centers);
   if(match.status==='matched'){$('task-center').value=match.matches[0].id;$('center-hint').textContent=`Centro reconocido: ${match.matches[0].name}`;}
   else if(match.status==='ambiguous'){$('task-center').value='';$('center-hint').textContent='Hay varios centros posibles. Selecciona el correcto.';}
@@ -176,7 +224,8 @@ document.querySelectorAll('[data-close]').forEach(button=>button.addEventListene
 $('main').addEventListener('click',event=>{
   const btn=event.target.closest('[data-action]');if(!btn)return;
   const action=btn.dataset.action,id=btn.dataset.id??'';
-  if(action==='today-area'){ui.todayArea=btn.dataset.value;ui.todayCenter='';ui.message='';render();}
+  if(action==='edit-task')editTask(id);
+  else if(action==='today-area'){ui.todayArea=btn.dataset.value;ui.todayCenter='';ui.message='';render();}
   else if(action==='today-center'){ui.todayCenter=id;render();}
   else if(action==='work-center'){ui.workCenter=id;render();}
   else if(action==='calendar-area'){ui.calendarArea=btn.dataset.value;render();}
@@ -201,8 +250,73 @@ $('main').addEventListener('click',event=>{
     if(!isValidTime(start)||!isValidTime(end)||start>=end||!days.length){ui.message='Revisa el horario y selecciona al menos un día.';render();return;}
     change(()=>{data.settings={start,end,workDays:days,silenceOutsideWork:$('work-silence').checked};ui.message='Ajustes guardados.';});
   }
+  else if(action==='open-login'){$('login-dialog').showModal();}
+  else if(action==='join-cloud')void joinCloud();
+  else if(action==='sync-now')void cloud?.sync();
+  else if(action==='sign-out')void cloud?.signOut().then(()=>{cloudStatus=cloud.statusText();render();}).catch(e=>{ui.message=e.message;render();});
   else if(action==='import-backup'){$('import-text').value='';$('import-file').value='';$('import-error').textContent='';$('import-dialog').showModal();}
   else if(action==='export-backup')exportBackup();
 });
+
+async function joinCloud(){
+  if(!cloud)return;
+  try{
+    const plan=await cloud.previewJoin();
+    if(plan.conflictingTasks.length||plan.conflictingCenters.length){
+      ui.message='Hay '+plan.conflictingTasks.length+' tareas y '+plan.conflictingCenters.length+
+        ' centros con cambios distintos entre teléfonos. No se ha unido ni sobrescrito nada. Conserva las copias de seguridad para resolver las diferencias.';
+      render();return;
+    }
+    const count=plan.uploadTasks.length,centers=plan.uploadCenters.length;
+    if(!confirm('Se conservarán los datos de ambos dispositivos. Este iPhone aportará '+count+' tareas y '+centers+' centros nuevos. Los registros con el mismo identificador se respetarán tal como están en la nube. ¿Continuar?'))return;
+    const result=await cloud.join();
+    ui.message='Agenda vinculada: '+result.tasks+' tareas y '+result.centers+' centros.';
+  }catch(e){ui.message=e.message;}render();
+}
+$('login-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const email=$('login-email').value.trim(),password=$('login-password').value;
+  const action=event.submitter?.value||'login';
+  $('login-error').textContent='';
+  if(!cloud){$('login-error').textContent='La conexión todavía no está disponible.';return;}
+  try{
+    if(action==='signup'){
+      const active=await cloud.signUp(email,password);
+      $('login-error').textContent=active?'Cuenta creada. Ya puedes vincular tu agenda.':'Revisa el correo para confirmar tu cuenta y después inicia sesión.';
+      if(active)$('login-dialog').close();
+    }else if(action==='recover'){
+      await cloud.recover(email);
+      $('login-error').textContent='Si existe la cuenta, recibirás instrucciones en tu correo.';
+    }else{
+      await cloud.signIn(email,password);
+      $('login-dialog').close();
+    }
+    render();
+  }catch(e){$('login-error').textContent=e.message;}
+});
+async function initializeCloud(){
+  try{
+    const client=await createAgendaClient();
+    cloud=new AgendaCloud({
+      client,storage:localStorage,getData:()=>structuredClone(data),
+      setData:next=>{
+        const checked=parseBackup(serializeBackup(next));
+        const previous=data;data=checked;
+        if(!save()){data=previous;throw new Error('No se pudo guardar la agenda combinada en este iPhone.');}
+        render();
+      },
+      onStatus:message=>{cloudStatus=message;if(ui.tab==='settings')render();}
+    });
+    await cloud.refreshAccount();
+    if(cloud.account&&cloud.state.linked&&cloud.state.userId===cloud.account.id)await cloud.sync();
+  }catch(error){
+    console.warn('Mi Agenda: nube no disponible',error);
+    cloudStatus='Sin conexión con la nube. La agenda local sigue funcionando.';
+  }
+  render();
+}
+window.addEventListener('online',()=>void cloud?.sync());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void cloud?.sync();});
+void initializeCloud();
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Sin modo sin conexión',error));
 render();
