@@ -40,9 +40,19 @@ export function planInitialMerge(local, remote) {
   const uploadCenters=local.centers.filter(c=>!remoteCenters.has(c.id));
   const sharedTasks=local.tasks.filter(t=>remoteTasks.has(t.id)).length;
   const sharedCenters=local.centers.filter(c=>remoteCenters.has(c.id)).length;
+  // Dos teléfonos pueden haber editado la misma tarea antes de crear la cuenta.
+  // Nunca descartamos silenciosamente la versión local ni resucitamos borrados.
+  const conflictingTasks=local.tasks.filter(t=>{
+    const row=remoteTasks.get(t.id);
+    return row && (row.deleted_at || !same(rowToTask(row),t));
+  });
+  const conflictingCenters=local.centers.filter(c=>{
+    const row=remoteCenters.get(c.id);
+    return row && (row.deleted_at || !same(rowToCenter(row),c));
+  });
   return {
     uploadTasks,uploadCenters,uploadSettings:!remote.settings,
-    sharedTasks,sharedCenters,
+    sharedTasks,sharedCenters,conflictingTasks,conflictingCenters,
     merged:{
       tasks:[...remote.tasks.filter(r=>!r.deleted_at).map(rowToTask),...uploadTasks],
       centers:[...remote.centers.filter(r=>!r.deleted_at).map(rowToCenter),...uploadCenters],
@@ -234,6 +244,10 @@ export class AgendaCloud {
       const remote=await this.fetchRemote();
       if(JSON.stringify(this.getData())!==localSnapshot)throw new Error('La agenda cambió durante la vinculación. Vuelve a intentarlo.');
       const plan=planInitialMerge(this.getData(),remote);
+      if(plan.conflictingTasks.length||plan.conflictingCenters.length){
+        throw new Error('Hay '+plan.conflictingTasks.length+' tareas y '+plan.conflictingCenters.length+
+          ' centros con versiones distintas entre teléfonos. No se ha reemplazado ningún dato. Conserva las copias de seguridad antes de resolver estas diferencias.');
+      }
       const userId=this.account.id;
       // Primero subir las tareas exclusivas. Ante fallo, no sustituir datos locales.
       await this.uploadRows('centers',plan.uploadCenters.map(value=>({kind:'centers',id:value.id,value,deletedAt:null})),userId);
