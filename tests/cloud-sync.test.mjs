@@ -66,3 +66,35 @@ test('la vinculación no sustituye cambios locales hechos mientras consulta la n
   assert.equal(current.tasks[0].title,'Modificada durante la consulta');
   assert.equal(cloud.state.linked,false);
 });
+
+test('detecta diferencias entre tareas compartidas antes de unir dos iPhone',()=>{
+  const local={tasks:[task('a','Versión iPhone 13')],centers:[center('c','Centro local')],settings};
+  const remote={
+    tasks:[remoteRow(task('a','Versión iPhone 16'))],
+    centers:[{...centerToRow('u',center('c','Centro nube')),updated_at:'2026-11-20T11:00:00Z'}],
+    settings:null,
+  };
+  const plan=planInitialMerge(local,remote);
+  assert.deepEqual(plan.conflictingTasks.map(x=>x.id),['a']);
+  assert.deepEqual(plan.conflictingCenters.map(x=>x.id),['c']);
+  assert.equal(plan.uploadTasks.length,0);
+});
+
+test('una tarea borrada en la nube requiere resolución explícita al vincular',()=>{
+  const local={tasks:[task('a','Conservar')],centers:[],settings};
+  const remote={tasks:[{...remoteRow(task('a','Conservar')),deleted_at:'2026-11-20T12:00:00Z'}],centers:[],settings:null};
+  assert.equal(planInitialMerge(local,remote).conflictingTasks.length,1);
+});
+
+test('join bloquea diferencias compartidas sin sobrescribir ni subir datos',async()=>{
+  const local={tasks:[task('a','Tarea local')],centers:[],settings};
+  const cloud=new AgendaCloud({
+    client:{},storage:{getItem:()=>null,setItem:()=>{}},
+    getData:()=>local,setData:()=>{throw new Error('No debe reemplazar la agenda');},
+  });
+  cloud.account={id:'user-1'};
+  cloud.fetchRemote=async()=>({tasks:[remoteRow(task('a','Tarea distinta'))],centers:[],settings:null});
+  cloud.uploadRows=async()=>{throw new Error('No debe subir cambios');};
+  await assert.rejects(()=>cloud.join(),/versiones distintas/);
+  assert.equal(cloud.state.linked,false);
+});
