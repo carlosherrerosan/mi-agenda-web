@@ -1,5 +1,5 @@
 /* Offline app shell. No personal data is cached here: only static public code. */
-const CACHE = 'mi-agenda-shell-v1';
+const CACHE = 'mi-agenda-shell-v2';
 const ASSETS = ['./','./index.html','./style.css','./app.js','./manifest.webmanifest','./src/logic.js','./src/calendar.js','./src/backup.js','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png'];
 self.addEventListener('install',event=>{
   event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting()));

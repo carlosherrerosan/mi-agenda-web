@@ -1,4 +1,4 @@
-import { detectCenter, extractSimpleSchedule, filterTasksByScope, getTaskContext, isValidDate, isValidTime, localISODate, parseCenterLines, normalize } from './src/logic.js';
+import { detectCenter, extractSimpleSchedule, filterTasksByScope, getTaskContext, isValidDate, isValidTime, localISODate, parseCenterLines, normalize, interpretTaskInput, sortCentersByPending } from './src/logic.js';
 import { getMonthGrid, moveMonth, monthLabel, dayLabel, tasksForDay, taskCountsByDay } from './src/calendar.js';
 import { parseBackup, serializeBackup } from './src/backup.js';
 
@@ -14,6 +14,7 @@ const $ = id => document.getElementById(id);
 let data = blankData();
 let storageReadError = false;
 let storageWriteError = false;
+let editingTaskId = null;
 try {
   const saved = localStorage.getItem(STORAGE_KEY);
   if(saved) data = parseBackup(saved);
@@ -30,7 +31,17 @@ function save(){
   try { localStorage.setItem(STORAGE_KEY,serializeBackup(data)); storageWriteError=false; return true; }
   catch(error){storageWriteError=true;ui.message='No se pudieron guardar los datos en este dispositivo. Exporta una copia y revisa el almacenamiento.';console.error(error);return false;}
 }
-function change(mutator){mutator();save();render();}
+function change(mutator){
+  const before=structuredClone(data);
+  mutator();
+  if(!save()){
+    data=before;
+    render();
+    return false;
+  }
+  render();
+  return true;
+}
 function centerName(id){return data.centers.find(c=>c.id===id)?.name??'Centro no disponible';}
 function pill(label,active,action,extras=''){return `<button type="button" class="chip ${active?'active':''}" data-action="${action}" ${extras}>${esc(label)}</button>`;}
 function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
@@ -41,6 +52,7 @@ function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
     return `<article class="task-card ${t.area==='personal'?'personal':''}">
       <button type="button" class="task-check ${done?'done':''}" aria-label="${done?'Marcar pendiente':'Marcar completada'}: ${esc(t.title)}" aria-pressed="${done}" data-action="toggle-task" data-id="${esc(t.id)}">${done?'✓':''}</button>
       <div class="task-body"><div class="task-name ${done?'done':''}">${esc(t.title)}</div><div class="task-context">${esc(context)}</div><div class="task-meta">${esc(when)}</div></div>
+      <button type="button" class="edit-btn" aria-label="Editar tarea ${esc(t.title)}" data-action="edit-task" data-id="${esc(t.id)}">Editar</button>
       <button type="button" class="delete-btn" aria-label="Eliminar tarea ${esc(t.title)}" data-action="delete-task" data-id="${esc(t.id)}">×</button>
     </article>`;
   }).join('');
@@ -53,7 +65,7 @@ function todayView(){
   const future=scoped(data.tasks.filter(t=>!t.completedAt&&t.date>today).sort(taskSort));
   const completed=scoped(data.tasks.filter(t=>Boolean(t.completedAt)).sort(taskSort));
   const filters=['all','work','personal'].map((x,i)=>pill(['Todas','Trabajo','Personal'][i],ui.todayArea===x,'today-area',`data-value="${x}"`)).join('');
-  const centerPills=ui.todayArea==='work'?`<div class="chip-row" aria-label="Filtrar por centro">${pill('Todos los centros',!ui.todayCenter,'today-center','data-id=""')}${pill('Sin centro',ui.todayCenter==='unassigned','today-center','data-id="unassigned"')}${data.centers.map(c=>pill(c.name,ui.todayCenter===c.id,'today-center',`data-id="${esc(c.id)}"`)).join('')}</div>`:'';
+  const centerPills=ui.todayArea==='work'?`<div class="chip-row" aria-label="Filtrar por centro">${pill('Todos los centros',!ui.todayCenter,'today-center','data-id=""')}${pill('Sin centro',ui.todayCenter==='unassigned','today-center','data-id="unassigned"')}${sortCentersByPending(data.centers,data.tasks).map(c=>pill(c.name,ui.todayCenter===c.id,'today-center',`data-id="${esc(c.id)}"`)).join('')}</div>`:'';
   const scope=ui.todayArea==='all'?'Todas las tareas':ui.todayArea==='personal'?'Personal':`Trabajo / ${ui.todayCenter==='unassigned'?'Sin centro':ui.todayCenter?centerName(ui.todayCenter):'Todos los centros'}`;
   return `<div class="hero"><div class="hero-number">${due.length}</div><div><strong>Tareas para hoy</strong><div class="subtle">Incluye atrasadas y sin fecha</div></div></div>
     <div class="subtle">Ver tareas de</div><div class="chip-row" aria-label="Filtrar tareas">${filters}</div>${centerPills}<p class="scope">Hoy / ${esc(scope)}</p>
@@ -61,7 +73,7 @@ function todayView(){
 }
 function workView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt&&(!ui.workCenter||(ui.workCenter==='unassigned'?!t.centerId:t.centerId===ui.workCenter))).sort(taskSort);
-  return `<p class="subtle top-intro">Las tareas se agrupan por centro. Pulsa uno para filtrar.</p><div class="chip-row">${pill('Todos',!ui.workCenter,'work-center','data-id=""')}${pill('Sin centro',ui.workCenter==='unassigned','work-center','data-id="unassigned"')}${data.centers.map(c=>pill(c.name,ui.workCenter===c.id,'work-center',`data-id="${esc(c.id)}"`)).join('')}</div>
+  return `<p class="subtle top-intro">Las tareas se agrupan por centro. Pulsa uno para filtrar.</p><div class="chip-row">${pill('Todos',!ui.workCenter,'work-center','data-id=""')}${pill('Sin centro',ui.workCenter==='unassigned','work-center','data-id="unassigned"')}${sortCentersByPending(data.centers,data.tasks).map(c=>pill(c.name,ui.workCenter===c.id,'work-center',`data-id="${esc(c.id)}"`)).join('')}</div>
     ${section('Pendientes',pending)}<button type="button" class="text-btn" data-action="go-centers">Gestionar mis centros (${data.centers.length})</button>`;
 }
 function personalView(){return section('Pendientes personales',data.tasks.filter(t=>t.area==='personal'&&!t.completedAt).sort(taskSort));}
@@ -84,7 +96,7 @@ function calendarView(){
 }
 function centersView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt);
-  const list=data.centers.map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
+  const list=sortCentersByPending(data.centers,data.tasks).map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
   return `<p class="subtle">Los centros que importes o añadas se guardan únicamente en este dispositivo.</p>
     <div class="hero"><div class="hero-number">${data.centers.length}</div><div><strong>Centros de trabajo</strong><div class="subtle">Organizados en tu agenda</div></div></div>
     <div class="center-list">${list||'<p class="empty">Aún no hay centros. Importa tu copia de Expo Go para recuperar los tuyos.</p>'}</div>
@@ -112,11 +124,19 @@ function render(){
   $('main').innerHTML=`${issue}${ui.message?`<div class="notice" role="status">${esc(ui.message)}</div>`:''}${body}`;
 }
 function openTask(area=ui.tab==='personal'?'personal':ui.tab==='calendar'?ui.calendarArea:'work',date=ui.tab==='calendar'?ui.calendarDay:''){
+  editingTaskId=null;$('task-dialog-title').textContent='Nueva tarea';$('task-form').querySelector('[type="submit"]').textContent='Guardar tarea';
   $('task-form').reset();$('task-error').textContent='';$('task-area').value=area;$('task-date').value=date;
   const options=['<option value="">Sin centro</option>',...data.centers.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`)];
   $('task-center').innerHTML=options.join('');
   if(ui.tab==='work'&&ui.workCenter&&ui.workCenter!=='unassigned')$('task-center').value=ui.workCenter;
   $('center-hint').textContent='';syncTaskArea();$('task-dialog').showModal();$('task-title').focus();
+}
+function editTask(id){
+  const task=data.tasks.find(t=>t.id===id);if(!task)return;
+  openTask(task.area,task.date);editingTaskId=id;
+  $('task-dialog-title').textContent='Modificar tarea';$('task-form').querySelector('[type="submit"]').textContent='Guardar cambios';
+  $('task-title').value=task.title;$('task-area').value=task.area;$('task-center').value=task.centerId??'';
+  $('task-date').value=task.date;$('task-time').value=task.time;syncTaskArea();
 }
 function syncTaskArea(){$('task-center-wrap').hidden=$('task-area').value==='personal';}
 function saveTaskFromForm(event){
@@ -128,9 +148,17 @@ function saveTaskFromForm(event){
   if(time&&!isValidTime(time)){error.textContent='Hora no válida.';return;}
   if(time&&!date){error.textContent='Indica también la fecha.';return;}
   if(area==='work'&&!centerId&&!confirm('Esta tarea quedará en Trabajo sin centro. ¿Guardar igualmente?'))return;
-  const task={id:newId(),title,area,centerId,date,time,completedAt:null,createdAt:new Date().toISOString()};
-  change(()=>{data.tasks.unshift(task);ui.message='Tarea guardada en este dispositivo.';if(ui.tab==='calendar'&&date){ui.calendarArea=area;ui.calendarMonth=date.slice(0,7);ui.calendarDay=date;}else{ui.tab='today';ui.todayArea='all';ui.todayCenter='';}});
-  $('task-dialog').close();
+  const existing=editingTaskId?data.tasks.find(t=>t.id===editingTaskId):null;
+  if(editingTaskId&&!existing){error.textContent='No se encontró la tarea original.';return;}
+  const task=existing?{...existing,title,area,centerId,date,time}:{id:newId(),title,area,centerId,date,time,completedAt:null,createdAt:new Date().toISOString()};
+  const saved=change(()=>{
+    if(existing)data.tasks=data.tasks.map(t=>t.id===existing.id?task:t);else data.tasks.unshift(task);
+    ui.message=existing?'Tarea modificada.':'Tarea guardada en este dispositivo.';
+    if(ui.tab==='calendar'&&date){ui.calendarArea=area;ui.calendarMonth=date.slice(0,7);ui.calendarDay=date;}
+    else{ui.tab='today';ui.todayArea='all';ui.todayCenter='';}
+  });
+  if(saved){editingTaskId=null;$('task-dialog').close();}
+  else error.textContent='No se pudo guardar la tarea. Conserva la ventana abierta y revisa el almacenamiento.';
 }
 function importBackup(){
   const raw=$('import-text').value.trim();const error=$('import-error');error.textContent='';
@@ -138,9 +166,17 @@ function importBackup(){
   let restored;
   try{restored=parseBackup(raw);}catch(err){error.textContent=err instanceof Error?err.message:'Copia no válida';return;}
   if(!confirm(`La copia contiene ${restored.tasks.length} tareas y ${restored.centers.length} centros. Sustituirá los datos de ESTA versión web, pero no los de Expo Go. ¿Importar?`))return;
+  const previous=data,previousReadError=storageReadError;
   data={tasks:restored.tasks,centers:restored.centers,settings:restored.settings};
-  storageReadError=false;ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
-  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';save();$('import-dialog').close();render();
+  storageReadError=false;
+  if(!save()){
+    data=previous;storageReadError=previousReadError;
+    error.textContent='No se ha podido guardar la copia. La agenda anterior sigue intacta.';
+    render();return;
+  }
+  ui.message=`Copia importada: ${data.tasks.length} tareas y ${data.centers.length} centros.`;
+  ui.tab='today';ui.todayArea='all';ui.todayCenter='';ui.workCenter='';
+  $('import-dialog').close();render();
 }
 function exportBackup(){
   try{
@@ -157,9 +193,10 @@ $('nav').addEventListener('click',event=>{
 $('add-task').addEventListener('click',()=>openTask());
 $('task-area').addEventListener('change',syncTaskArea);
 $('task-title').addEventListener('input',event=>{
-  const title=event.target.value;const schedule=extractSimpleSchedule(title);
-  if(schedule.date)$('task-date').value=schedule.date;
-  if(schedule.time)$('task-time').value=schedule.time;
+  const title=event.target.value;const parsed=interpretTaskInput(title);
+  if(parsed.date)$('task-date').value=parsed.date;
+  if(parsed.time)$('task-time').value=parsed.time;
+  if(parsed.area){$('task-area').value=parsed.area;syncTaskArea();}
   const match=detectCenter(title,data.centers);
   if(match.status==='matched'){$('task-center').value=match.matches[0].id;$('center-hint').textContent=`Centro reconocido: ${match.matches[0].name}`;}
   else if(match.status==='ambiguous'){$('task-center').value='';$('center-hint').textContent='Hay varios centros posibles. Selecciona el correcto.';}
@@ -176,7 +213,8 @@ document.querySelectorAll('[data-close]').forEach(button=>button.addEventListene
 $('main').addEventListener('click',event=>{
   const btn=event.target.closest('[data-action]');if(!btn)return;
   const action=btn.dataset.action,id=btn.dataset.id??'';
-  if(action==='today-area'){ui.todayArea=btn.dataset.value;ui.todayCenter='';ui.message='';render();}
+  if(action==='edit-task')editTask(id);
+  else if(action==='today-area'){ui.todayArea=btn.dataset.value;ui.todayCenter='';ui.message='';render();}
   else if(action==='today-center'){ui.todayCenter=id;render();}
   else if(action==='work-center'){ui.workCenter=id;render();}
   else if(action==='calendar-area'){ui.calendarArea=btn.dataset.value;render();}

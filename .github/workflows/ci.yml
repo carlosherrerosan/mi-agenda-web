@@ -1,0 +1,29 @@
+name: Validar mejoras Mi Agenda
+on:
+  pull_request:
+  push:
+    branches:
+      - mejoras-dictado-edicion-centros-20261120
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Obtener código
+        uses: actions/checkout@v4
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Comprobar sintaxis
+        run: |
+          node --check app.js
+          node --check src/logic.js
+          node --check src/backup.js
+      - name: Ejecutar pruebas
+        run: npm test
