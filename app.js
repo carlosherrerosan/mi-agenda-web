@@ -262,6 +262,11 @@ async function joinCloud(){
   if(!cloud)return;
   try{
     const plan=await cloud.previewJoin();
+    if(plan.conflictingTasks.length||plan.conflictingCenters.length){
+      ui.message='Hay '+plan.conflictingTasks.length+' tareas y '+plan.conflictingCenters.length+
+        ' centros con cambios distintos entre teléfonos. No se ha unido ni sobrescrito nada. Conserva las copias de seguridad para resolver las diferencias.';
+      render();return;
+    }
     const count=plan.uploadTasks.length,centers=plan.uploadCenters.length;
     if(!confirm('Se conservarán los datos de ambos dispositivos. Este iPhone aportará '+count+' tareas y '+centers+' centros nuevos. Los registros con el mismo identificador se respetarán tal como están en la nube. ¿Continuar?'))return;
     const result=await cloud.join();
