@@ -59,6 +59,20 @@
       <button type="button" id="import-confirm" class="primary-btn">Comprobar e importar</button>
     </div>
   </dialog>
+  <dialog id="login-dialog" aria-labelledby="login-title">
+    <form id="login-form" class="dialog-body">
+      <div class="dialog-head"><h2 id="login-title">Mi Agenda privada</h2><button type="button" class="plain-close" data-close="login-dialog" aria-label="Cerrar">×</button></div>
+      <p class="subtle">Usa la misma cuenta de Mi Agenda en los dos iPhone. No necesitas configurar el correo en ambos teléfonos.</p>
+      <label for="login-email">Correo de recuperación</label>
+      <input id="login-email" type="email" autocomplete="email" required>
+      <label for="login-password">Contraseña de Mi Agenda</label>
+      <input id="login-password" type="password" minlength="8" autocomplete="current-password" required>
+      <div id="login-error" class="small-note" role="status"></div>
+      <button type="submit" class="primary-btn" name="auth-action" value="login">Entrar</button>
+      <button type="submit" class="secondary-btn" name="auth-action" value="signup" formnovalidate>Crear cuenta</button>
+      <button type="submit" class="text-btn" name="auth-action" value="recover" formnovalidate>Recuperar contraseña</button>
+    </form>
+  </dialog>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

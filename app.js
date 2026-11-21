@@ -1,10 +1,13 @@
 import { detectCenter, extractSimpleSchedule, filterTasksByScope, getTaskContext, isValidDate, isValidTime, localISODate, parseCenterLines, normalize } from './src/logic.js';
 import { getMonthGrid, moveMonth, monthLabel, dayLabel, tasksForDay, taskCountsByDay } from './src/calendar.js';
 import { parseBackup, serializeBackup } from './src/backup.js';
+import { AgendaCloud, createAgendaClient } from './src/cloud-sync.js';
 
-// This application is static: no account, server, analytics or network requests for task data.
-// Data remains in the local browser storage; export a backup before changing device/browser.
+// Los datos se guardan localmente y, tras vinculación explícita, se sincronizan con Supabase.
+// Las copias de seguridad nunca se publican en GitHub.
 const STORAGE_KEY = 'mi-agenda-web-local-v1';
+let cloud = null;
+let cloudStatus = 'Solo en este iPhone.';
 const defaultSettings = () => ({start:'08:00',end:'19:00',workDays:[1,2,3,4,5],silenceOutsideWork:true});
 const blankData = () => ({tasks:[],centers:[],settings:defaultSettings()});
 const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -30,7 +33,15 @@ function save(){
   try { localStorage.setItem(STORAGE_KEY,serializeBackup(data)); storageWriteError=false; return true; }
   catch(error){storageWriteError=true;ui.message='No se pudieron guardar los datos en este dispositivo. Exporta una copia y revisa el almacenamiento.';console.error(error);return false;}
 }
-function change(mutator){mutator();save();render();}
+function change(mutator){
+  const before=structuredClone(data);
+  mutator();
+  if(!save()){data=before;render();return;}
+  try {cloud?.onLocalChange(before,data);} catch(error){
+    data=before;save();ui.message=error.message;
+  }
+  render();
+}
 function centerName(id){return data.centers.find(c=>c.id===id)?.name??'Centro no disponible';}
 function pill(label,active,action,extras=''){return `<button type="button" class="chip ${active?'active':''}" data-action="${action}" ${extras}>${esc(label)}</button>`;}
 function tasksHtml(tasks,empty='No hay tareas en esta sección.'){
@@ -85,21 +96,30 @@ function calendarView(){
 function centersView(){
   const pending=data.tasks.filter(t=>t.area==='work'&&!t.completedAt);
   const list=data.centers.map(c=>`<div class="center-row"><strong>${esc(c.name)}</strong><span>${pending.filter(t=>t.centerId===c.id).length} pendientes</span></div>`).join('');
-  return `<p class="subtle">Los centros que importes o añadas se guardan únicamente en este dispositivo.</p>
+  return `<p class="subtle">Los centros se guardan en este dispositivo y se sincronizan cuando vincules tu cuenta.</p>
     <div class="hero"><div class="hero-number">${data.centers.length}</div><div><strong>Centros de trabajo</strong><div class="subtle">Organizados en tu agenda</div></div></div>
     <div class="center-list">${list||'<p class="empty">Aún no hay centros. Importa tu copia de Expo Go para recuperar los tuyos.</p>'}</div>
     <div class="panel"><h3>Añadir centros</h3><p class="small-note">Escribe uno por línea. Puedes añadir alias con el formato: Centro | alias1, alias2.</p><label for="center-input">Nuevos centros</label><textarea id="center-input" rows="4" placeholder="Nombre del centro"></textarea><button type="button" class="primary-btn" data-action="add-centers">Añadir centros</button></div>`;
 }
 function settingsView(){
   const s=data.settings;
+  const account=cloud?.account;
+  const linked=cloud?.state.linked&&cloud.state.userId===account?.id;
+  const cloudPanel=`<div class="panel"><h3>Sincronización privada</h3><p class="subtle" role="status">${esc(cloudStatus)}</p>${account?
+    `<p class="small-note">Cuenta: ${esc(account.email||'Identificada')}</p>${linked?
+      `<button type="button" class="secondary-btn" data-action="sync-now">Sincronizar ahora</button>`:
+      `<button type="button" class="primary-btn" data-action="join-cloud">Unir esta agenda con mi cuenta</button>`}
+    <button type="button" class="text-btn" data-action="sign-out">Cerrar sesión</button>`:
+    `<p class="small-note">La cuenta es independiente de Apple y no requiere tener el mismo correo configurado en ambos iPhone.</p>
+    <button type="button" class="primary-btn" data-action="open-login">Acceder o crear cuenta</button>`}</div>`;
   const days=['L','M','X','J','V','S','D'].map((name,i)=>`<label><input type="checkbox" name="work-day" value="${i+1}" ${s.workDays.includes(i+1)?'checked':''}>${name}</label>`).join('');
-  return `<div class="notice"><strong>Versión web de prueba</strong>Esta aplicación funciona sin Expo Go, pero todavía <b>no envía recordatorios con la aplicación cerrada</b>. Mantén Expo Go para tus avisos habituales.</div>
+  return `${cloudPanel}<div class="notice"><strong>Versión web de prueba</strong>Esta aplicación funciona sin Expo Go, pero todavía <b>no envía recordatorios con la aplicación cerrada</b>. Mantén Expo Go para tus avisos habituales.</div>
     <div class="panel"><h3>Horario laboral</h3><div class="two-col"><div><label for="work-start">Desde</label><input type="time" id="work-start" value="${esc(s.start)}"></div><div><label for="work-end">Hasta</label><input type="time" id="work-end" value="${esc(s.end)}"></div></div>
     <label>Días de trabajo</label><div class="day-checks">${days}</div><div class="toggle-setting"><input type="checkbox" id="work-silence" ${s.silenceOutsideWork?'checked':''}><label for="work-silence">Respetar horario laboral al planificar avisos en la versión nativa</label></div>
     <button type="button" class="secondary-btn" data-action="save-settings">Guardar ajustes</button></div>
-    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Importa el archivo que guardaste desde Expo Go para traer tus tareas y centros a esta versión. La importación sustituye los datos locales de esta versión web, no los de Expo Go.</p>
+    <div class="panel"><h3>Copias de seguridad</h3><p class="subtle">Antes de vincular este iPhone, puedes importar una copia de Expo Go. La importación sustituye los datos locales de esta versión web, nunca los de Expo Go.</p>
     <div class="settings-actions"><button type="button" class="primary-btn" data-action="import-backup">Importar copia de Expo Go</button><button type="button" class="secondary-btn" data-action="export-backup">Descargar copia de esta agenda</button></div>
-    <p class="privacy-note">No hay cuenta ni sincronización automática. Los datos se guardan en el almacenamiento local del navegador y podrían perderse si se borran los datos de Safari. Haz copias periódicas.</p></div>
+    <p class="privacy-note">Las copias se guardan en el iPhone. Cuando vincules tu cuenta, las tareas se sincronizarán de forma privada; conserva copias periódicas.</p></div>
     <div class="panel"><h3>Instalación en el iPhone</h3><p class="subtle">Abre esta página en Safari, pulsa Compartir y elige «Añadir a pantalla de inicio». La agenda tendrá su propio icono.</p></div>`;
 }
 function render(){
@@ -133,6 +153,7 @@ function saveTaskFromForm(event){
   $('task-dialog').close();
 }
 function importBackup(){
+  if(cloud?.state.linked){$('import-error').textContent='Por seguridad, importa las copias antes de vincular este dispositivo.';return;}
   const raw=$('import-text').value.trim();const error=$('import-error');error.textContent='';
   if(!raw){error.textContent='Elige un archivo o pega el texto de la copia.';return;}
   let restored;
@@ -201,8 +222,68 @@ $('main').addEventListener('click',event=>{
     if(!isValidTime(start)||!isValidTime(end)||start>=end||!days.length){ui.message='Revisa el horario y selecciona al menos un día.';render();return;}
     change(()=>{data.settings={start,end,workDays:days,silenceOutsideWork:$('work-silence').checked};ui.message='Ajustes guardados.';});
   }
+  else if(action==='open-login'){$('login-dialog').showModal();}
+  else if(action==='join-cloud')void joinCloud();
+  else if(action==='sync-now')void cloud?.sync();
+  else if(action==='sign-out')void cloud?.signOut().then(()=>{cloudStatus=cloud.statusText();render();}).catch(e=>{ui.message=e.message;render();});
   else if(action==='import-backup'){$('import-text').value='';$('import-file').value='';$('import-error').textContent='';$('import-dialog').showModal();}
   else if(action==='export-backup')exportBackup();
 });
+
+async function joinCloud(){
+  if(!cloud)return;
+  try{
+    const plan=await cloud.previewJoin();
+    const count=plan.uploadTasks.length,centers=plan.uploadCenters.length;
+    if(!confirm('Se conservarán los datos de ambos dispositivos. Este iPhone aportará '+count+' tareas y '+centers+' centros nuevos. Los registros con el mismo identificador se respetarán tal como están en la nube. ¿Continuar?'))return;
+    const result=await cloud.join();
+    ui.message='Agenda vinculada: '+result.tasks+' tareas y '+result.centers+' centros.';
+  }catch(e){ui.message=e.message;}render();
+}
+$('login-form').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const email=$('login-email').value.trim(),password=$('login-password').value;
+  const action=event.submitter?.value||'login';
+  $('login-error').textContent='';
+  if(!cloud){$('login-error').textContent='La conexión todavía no está disponible.';return;}
+  try{
+    if(action==='signup'){
+      const active=await cloud.signUp(email,password);
+      $('login-error').textContent=active?'Cuenta creada. Ya puedes vincular tu agenda.':'Revisa el correo para confirmar tu cuenta y después inicia sesión.';
+      if(active)$('login-dialog').close();
+    }else if(action==='recover'){
+      await cloud.recover(email);
+      $('login-error').textContent='Si existe la cuenta, recibirás instrucciones en tu correo.';
+    }else{
+      await cloud.signIn(email,password);
+      $('login-dialog').close();
+    }
+    render();
+  }catch(e){$('login-error').textContent=e.message;}
+});
+async function initializeCloud(){
+  try{
+    const client=await createAgendaClient();
+    cloud=new AgendaCloud({
+      client,storage:localStorage,getData:()=>structuredClone(data),
+      setData:next=>{
+        const checked=parseBackup(serializeBackup(next));
+        const previous=data;data=checked;
+        if(!save()){data=previous;throw new Error('No se pudo guardar la agenda combinada en este iPhone.');}
+        render();
+      },
+      onStatus:message=>{cloudStatus=message;if(ui.tab==='settings')render();}
+    });
+    await cloud.refreshAccount();
+    if(cloud.account&&cloud.state.linked&&cloud.state.userId===cloud.account.id)await cloud.sync();
+  }catch(error){
+    console.warn('Mi Agenda: nube no disponible',error);
+    cloudStatus='Sin conexión con la nube. La agenda local sigue funcionando.';
+  }
+  render();
+}
+window.addEventListener('online',()=>void cloud?.sync());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void cloud?.sync();});
+void initializeCloud();
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(error=>console.warn('Sin modo sin conexión',error));
 render();
